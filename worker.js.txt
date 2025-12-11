@@ -1,0 +1,209 @@
+const HTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>URL Shortener</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        background: #f7f9fc;
+        font-family: 'Inter', Arial, sans-serif;
+        display: flex;
+        height: 100vh;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .container {
+        width: 90%;
+        max-width: 450px;
+        background: white;
+        padding: 30px;
+        border-radius: 16px;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.10);
+        text-align: center;
+        animation: fadeIn 0.5s ease;
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    h2 {
+        margin-bottom: 15px;
+        color: #2c3e50;
+        letter-spacing: 0.5px;
+    }
+
+    input {
+        width: 100%;
+        padding: 14px;
+        margin: 10px 0;
+        border: 1px solid #dcdfe6;
+        border-radius: 10px;
+        font-size: 15px;
+        transition: 0.2s;
+    }
+
+    input:focus {
+        border-color: #3b82f6;
+        box-shadow: 0 0 5px rgba(59,130,246,0.3);
+    }
+
+    button {
+        width: 100%;
+        padding: 14px;
+        background: #3b82f6;
+        color: white;
+        border: none;
+        border-radius: 10px;
+        margin-top: 10px;
+        font-size: 16px;
+        cursor: pointer;
+        transition: 0.2s;
+    }
+
+    button:hover {
+        background: #2563eb;
+    }
+
+    #result {
+        margin-top: 20px;
+        padding: 12px;
+        background: #f0f4ff;
+        border-left: 4px solid #3b82f6;
+        border-radius: 8px;
+        display: none;
+        text-align: left;
+        font-size: 14px;
+        word-break: break-all;
+    }
+
+    a {
+        color: #2563eb;
+        text-decoration: none;
+        font-weight: bold;
+    }
+</style>
+</head>
+
+<body>
+
+<div class="container">
+    <h2>✨ Serverless URL Shortener</h2>
+
+    <input id="url" placeholder="Enter long URL (https://...)" />
+    <input id="alias" placeholder="Custom alias (optional)" />
+
+    <button onclick="shorten()">Create Short Link</button>
+
+    <div id="result"></div>
+</div>
+
+<script>
+async function shorten() {
+    const url = document.getElementById('url').value.trim();
+    const alias = document.getElementById('alias').value.trim();
+    const result = document.getElementById('result');
+
+    result.style.display = "block";
+    result.innerHTML = "⏳ Creating short link...";
+
+    const res = await fetch('/api/shorten', {
+        method: 'POST',
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, alias })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+        result.innerHTML = "❌ Error: " + data.error;
+        return;
+    }
+
+    result.innerHTML = 
+        "✅ Short URL created:<br><br>" +
+        "<a href='" + data.shortUrl + "' target='_blank'>" + data.shortUrl + "</a>";
+}
+</script>
+
+</body>
+</html>
+`;
+
+
+
+export default {
+  async fetch(request, env) {
+    const u = new URL(request.url);
+    const path = u.pathname;
+
+    // Serve main page
+    if (path === '/' && request.method === 'GET') {
+      return new Response(HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' }});
+    }
+
+    // Create short link
+    if (path === '/api/shorten' && request.method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
+
+      const longUrl = (body.url || '').trim();
+      let alias = (body.alias || '').trim();
+
+      if (!longUrl || !(longUrl.startsWith('http://') || longUrl.startsWith('https://'))) {
+        return json({ error: 'URL must start with http:// or https://' }, 400);
+      }
+
+      if (alias) {
+        // sanitize: allow only alphanum, - and _
+        alias = alias.replace(/[^A-Za-z0-9-_]/g, '').slice(0, 64);
+        if (!alias) return json({ error: 'Invalid alias' }, 400);
+      } else {
+        alias = generateCode(6);
+        let tries = 0;
+        while (await env.LINKS.get(alias) && tries++ < 10) {
+          alias = generateCode(6);
+        }
+        if (await env.LINKS.get(alias)) return json({ error: 'Try again' }, 500);
+      }
+
+      // store mapping
+      await env.LINKS.put(alias, longUrl);
+
+      return json({ shortUrl: `${u.origin}/${alias}`, alias, original: longUrl }, 201);
+    }
+
+    // Redirect
+    if (request.method === 'GET') {
+      const code = path.slice(1);
+      if (code) {
+        const longUrl = await env.LINKS.get(code);
+        if (longUrl) return Response.redirect(longUrl, 302);
+        return new Response('Short URL not found', { status: 404 });
+      }
+    }
+
+    return new Response('Not found', { status: 404 });
+  }
+};
+
+function generateCode(len = 6) {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let s = '';
+  for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
